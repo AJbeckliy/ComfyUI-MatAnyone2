@@ -49,6 +49,27 @@ ComfyUI/models/matanyone2/MatAnyone2
 ComfyUI/models/matanyone2/torch_hub/checkpoints
 ```
 
+Manual model download:
+
+- Quark: [https://pan.quark.cn/s/c3d88e3f9ece](https://pan.quark.cn/s/c3d88e3f9ece)
+
+If you download the model manually, place the files here:
+
+```text
+ComfyUI/models/matanyone2/MatAnyone2
+```
+
+If the package also includes ResNet checkpoint files such as:
+
+- `resnet18-5c106cde.pth`
+- `resnet50-19c8e357.pth`
+
+place them here:
+
+```text
+ComfyUI/models/matanyone2/torch_hub/checkpoints
+```
+
 ## Nodes
 
 ### Load Video For MatAnyone2
@@ -113,3 +134,4 @@ Each workflow includes:
 ## Credits
 
 - [MatAnyone2](https://github.com/pq-yang/MatAnyone2)
+- Bilibili: [https://space.bilibili.com/481121504?spm_id_from=333.1007.0.0](https://space.bilibili.com/481121504?spm_id_from=333.1007.0.0)
