@@ -1,0 +1,470 @@
+{
+  "id": "2de3e9f9-8dc3-4c17-8ef7-6d6f58f4f001",
+  "revision": 0,
+  "last_node_id": 7,
+  "last_link_id": 10,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadVideoForMatAnyone2",
+      "pos": [
+        80,
+        220
+      ],
+      "size": [
+        330,
+        150
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "COMBO",
+          "widget": {
+            "name": "video"
+          },
+          "link": null
+        },
+        {
+          "name": "max_frames",
+          "type": "INT",
+          "widget": {
+            "name": "max_frames"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "frames",
+          "type": "IMAGE",
+          "links": [
+            3
+          ]
+        },
+        {
+          "name": "mask_frame_image",
+          "type": "IMAGE",
+          "links": [
+            1,
+            2
+          ]
+        },
+        {
+          "name": "frame_count",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "mask_frame_index",
+          "type": "INT",
+          "links": [
+            10
+          ]
+        },
+        {
+          "name": "fps",
+          "type": "FLOAT",
+          "links": [
+            7
+          ]
+        },
+        {
+          "name": "audio_source",
+          "type": "STRING",
+          "links": [
+            9
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadVideoForMatAnyone2"
+      },
+      "widgets_values": [
+        "222.mp4",
+        0,
+        0
+      ]
+    },
+    {
+      "id": 2,
+      "type": "LoadImageMask",
+      "pos": [
+        80,
+        760
+      ],
+      "size": [
+        330,
+        314
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "COMBO",
+          "widget": {
+            "name": "image"
+          },
+          "link": null
+        },
+        {
+          "name": "channel",
+          "type": "COMBO",
+          "widget": {
+            "name": "channel"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [
+            4
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadImageMask"
+      },
+      "widgets_values": [
+        "MaskPreview_temp_knjeb_00001_tnhbq_1774247268.jpg",
+        "red"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "PreviewImage",
+      "pos": [
+        500,
+        40
+      ],
+      "size": [
+        360,
+        520
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 1
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 4,
+      "type": "SaveImage",
+      "pos": [
+        500,
+        600
+      ],
+      "size": [
+        330,
+        80
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 2
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "MatAnyone2/mask_frame_image"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "MatAnyone2",
+      "pos": [
+        500,
+        840
+      ],
+      "size": [
+        350,
+        120
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 3
+        },
+        {
+          "name": "mask_frame_index",
+          "type": "INT",
+          "link": 10
+        },
+        {
+          "name": "invert_mask",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "invert_mask"
+          },
+          "link": null
+        },
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "rgba_image",
+          "type": "IMAGE",
+          "links": [
+            5,
+            6
+          ]
+        },
+        {
+          "name": "alpha_mask",
+          "type": "MASK",
+          "links": [
+            8
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MatAnyone2"
+      },
+      "widgets_values": [
+        false
+      ]
+    },
+    {
+      "id": 6,
+      "type": "PreviewImage",
+      "pos": [
+        980,
+        700
+      ],
+      "size": [
+        360,
+        520
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 5
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 7,
+      "type": "SaveMatAnyone2Video",
+      "pos": [
+        980,
+        220
+      ],
+      "size": [
+        410,
+        260
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 6
+        },
+        {
+          "name": "fps",
+          "type": "FLOAT",
+          "link": 7
+        },
+        {
+          "name": "alpha_mask",
+          "type": "MASK",
+          "link": 8
+        },
+        {
+          "name": "audio_source",
+          "type": "STRING",
+          "link": 9
+        },
+        {
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          },
+          "link": null
+        },
+        {
+          "name": "save_path",
+          "type": "STRING",
+          "widget": {
+            "name": "save_path"
+          },
+          "link": null
+        },
+        {
+          "name": "background",
+          "type": "COMBO",
+          "widget": {
+            "name": "background"
+          },
+          "link": null
+        },
+        {
+          "name": "save_preview_image",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "save_preview_image"
+          },
+          "link": null
+        },
+        {
+          "name": "save_alpha_video",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "save_alpha_video"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "SaveMatAnyone2Video"
+      },
+      "widgets_values": [
+        "video",
+        "MatAnyone2",
+        "black",
+        true,
+        true
+      ]
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      1,
+      3,
+      0,
+      "IMAGE"
+    ],
+    [
+      2,
+      1,
+      1,
+      4,
+      0,
+      "IMAGE"
+    ],
+    [
+      3,
+      1,
+      0,
+      5,
+      0,
+      "IMAGE"
+    ],
+    [
+      4,
+      2,
+      0,
+      5,
+      1,
+      "MASK"
+    ],
+    [
+      5,
+      5,
+      0,
+      6,
+      0,
+      "IMAGE"
+    ],
+    [
+      6,
+      5,
+      0,
+      7,
+      0,
+      "IMAGE"
+    ],
+    [
+      7,
+      1,
+      4,
+      7,
+      1,
+      "FLOAT"
+    ],
+    [
+      8,
+      5,
+      1,
+      7,
+      2,
+      "MASK"
+    ],
+    [
+      9,
+      1,
+      5,
+      7,
+      3,
+      "STRING"
+    ],
+    [
+      10,
+      1,
+      3,
+      5,
+      1,
+      "INT"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.92,
+      "offset": [
+        48,
+        -32
+      ]
+    },
+    "workflowRendererVersion": "LG"
+  },
+  "version": 0.4
+}

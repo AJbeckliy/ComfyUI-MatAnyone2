@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+_save_test/
+.DS_Store
+Thumbs.db
+
+output/
+models/
