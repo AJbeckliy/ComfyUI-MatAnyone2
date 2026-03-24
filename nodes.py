@@ -186,16 +186,14 @@ def ensure_ui_video_preview(video_path, output_dir, ui_subfolder="MatAnyone2/pre
     }]
 
 
-def write_ui_proxy_preview_video(output_dir, filename_prefix, rgb_uint8, alpha_float, fps, audio_source=None):
+def write_ui_proxy_preview_video(output_dir, filename_prefix, images, alpha_mask, fps, audio_source=None):
     import imageio_ffmpeg
 
-    if rgb_uint8.ndim != 4 or rgb_uint8.shape[-1] != 3:
-        raise RuntimeError(f"Expected RGB preview frames with shape (B, H, W, 3), got {tuple(rgb_uint8.shape)}")
+    if images.ndim != 4 or images.shape[-1] < 3:
+        raise RuntimeError(f"Expected IMAGE input with shape (B, H, W, C), got {tuple(images.shape)}")
 
-    alpha = np.clip(alpha_float, 0.0, 1.0)[..., None]
-    composite = np.clip(rgb_uint8.astype(np.float32) * alpha, 0, 255).astype(np.uint8)
-    image_height = int(composite.shape[1])
-    image_width = int(composite.shape[2])
+    image_height = int(images.shape[1])
+    image_width = int(images.shape[2])
 
     ui_prefix = build_filename_prefix(filename_prefix, "MatAnyone2/previews")
     ui_folder, ui_filename, ui_counter, _, _ = folder_paths.get_save_image_path(
@@ -218,6 +216,9 @@ def write_ui_proxy_preview_video(output_dir, filename_prefix, rgb_uint8, alpha_f
     cmd = [
         ffmpeg,
         "-y",
+        "-loglevel",
+        "error",
+        "-nostats",
         "-f",
         "rawvideo",
         "-vcodec",
@@ -242,14 +243,33 @@ def write_ui_proxy_preview_video(output_dir, filename_prefix, rgb_uint8, alpha_f
         *audio_output_args,
         proxy_path,
     ]
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         cmd,
-        input=composite.tobytes(),
-        stdout=subprocess.PIPE,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
-    if proc.returncode != 0:
-        raise RuntimeError(f"Failed to save preview MP4 video:\n{proc.stderr.decode('utf-8', 'ignore')}")
+    try:
+        for frame_idx in range(images.shape[0]):
+            rgb = np.clip(images[frame_idx, ..., :3].float().cpu().numpy() * 255.0, 0, 255).astype(np.uint8)
+            if alpha_mask is not None:
+                alpha = alpha_mask[frame_idx].float().cpu().numpy()
+            elif images.shape[-1] >= 4:
+                alpha = images[frame_idx, ..., 3].float().cpu().numpy()
+            else:
+                alpha = np.ones((image_height, image_width), dtype=np.float32)
+            alpha = np.clip(alpha, 0.0, 1.0)[..., None]
+            composite = np.clip(rgb.astype(np.float32) * alpha, 0, 255).astype(np.uint8)
+            proc.stdin.write(composite.tobytes())
+        proc.stdin.close()
+        stderr = proc.stderr.read()
+        returncode = proc.wait()
+    except Exception:
+        proc.kill()
+        proc.wait()
+        raise
+    if returncode != 0:
+        raise RuntimeError(f"Failed to save preview MP4 video:\n{stderr.decode('utf-8', 'ignore')}")
 
     return proxy_path
 
@@ -464,29 +484,40 @@ class MatAnyone2Node:
 
         return first_mask.clamp(0.0, 255.0)
 
-    def _run_sequence(self, frames, init_mask, device, warmup_steps=10):
+    def _run_sequence(self, frames, frame_indices, init_mask, device, warmup_steps=10):
         from matanyone2.inference.inference_core import InferenceCore
         from matanyone2.utils.device import safe_autocast
 
         processor = InferenceCore(self.model, cfg=self.model.cfg, device=device)
         alpha_frames = []
+        frame_indices = list(frame_indices)
+        if not frame_indices:
+            raise RuntimeError("Cannot process an empty frame sequence.")
 
         with torch.inference_mode():
             with safe_autocast():
-                processor.step(frames[0], init_mask, objects=[1])
+                first_frame = frames[frame_indices[0]].to(device)
+                processor.step(first_frame, init_mask, objects=[1])
 
                 output_prob = None
                 for _ in range(max(int(warmup_steps), 0)):
-                    output_prob = processor.step(frames[0], first_frame_pred=True)
+                    output_prob = processor.step(first_frame, first_frame_pred=True)
 
                 if output_prob is None:
-                    output_prob = processor.step(frames[0], first_frame_pred=True)
+                    output_prob = processor.step(first_frame, first_frame_pred=True)
 
-                alpha_frames.append(processor.output_prob_to_mask(output_prob))
+                alpha_frames.append(processor.output_prob_to_mask(output_prob).float().cpu())
+                del first_frame, output_prob
 
-                for frame_idx in range(1, frames.shape[0]):
-                    output_prob = processor.step(frames[frame_idx])
-                    alpha_frames.append(processor.output_prob_to_mask(output_prob))
+                for frame_idx in frame_indices[1:]:
+                    frame = frames[frame_idx].to(device)
+                    output_prob = processor.step(frame)
+                    alpha_frames.append(processor.output_prob_to_mask(output_prob).float().cpu())
+                    del frame, output_prob
+
+        del processor
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
 
         return torch.stack(alpha_frames, dim=0).float().clamp(0.0, 1.0)
 
@@ -504,15 +535,26 @@ class MatAnyone2Node:
         if mask_frame < 0 or mask_frame >= batch:
             raise RuntimeError(f"mask_frame {mask_frame} is out of range for IMAGE input with {batch} frames.")
 
-        frames = images[..., :3].permute(0, 3, 1, 2).float().to(self.device)
+        frames = images[..., :3].permute(0, 3, 1, 2).float().cpu()
         init_mask = self._prepare_mask(mask, height, width, mask_frame=mask_frame, invert_mask=invert_mask)
 
-        forward_alpha = self._run_sequence(frames[mask_frame:], init_mask, self.device, warmup_steps=10)
+        forward_alpha = self._run_sequence(
+            frames,
+            range(mask_frame, batch),
+            init_mask,
+            self.device,
+            warmup_steps=10,
+        )
         if mask_frame == 0:
             alpha_mask = forward_alpha
         else:
-            backward_frames = torch.flip(frames[: mask_frame + 1], dims=[0])
-            backward_alpha = self._run_sequence(backward_frames, init_mask, self.device, warmup_steps=10)
+            backward_alpha = self._run_sequence(
+                frames,
+                range(mask_frame, -1, -1),
+                init_mask,
+                self.device,
+                warmup_steps=10,
+            )
             leading_alpha = torch.flip(backward_alpha[1:], dims=[0])
             alpha_mask = torch.cat([leading_alpha, forward_alpha], dim=0)
 
@@ -536,11 +578,43 @@ class SaveMatAnyone2Base:
             alpha = torch.ones(images.shape[:3], dtype=torch.float32)
         return alpha.clamp(0.0, 1.0)
 
-    def _compose_preview(self, rgb_uint8, alpha_float, background_rgb):
+    def _get_frame_rgb_uint8(self, images, frame_idx):
+        return np.clip(images[frame_idx, ..., :3].float().cpu().numpy() * 255.0, 0, 255).astype(np.uint8)
+
+    def _get_frame_alpha_float(self, images, alpha_mask, frame_idx):
+        if alpha_mask is not None:
+            alpha = alpha_mask[frame_idx].float().cpu().numpy()
+        elif images.shape[-1] >= 4:
+            alpha = images[frame_idx, ..., 3].float().cpu().numpy()
+        else:
+            alpha = np.ones(images.shape[1:3], dtype=np.float32)
+        return np.clip(alpha, 0.0, 1.0)
+
+    def _compose_frame(self, rgb_uint8, alpha_float, background_rgb):
         alpha = alpha_float[..., None]
         background = background_rgb.reshape(1, 1, 3).astype(np.float32)
-        preview = (rgb_uint8[0].astype(np.float32) * alpha[0]) + (background * (1.0 - alpha[0]))
+        preview = (rgb_uint8.astype(np.float32) * alpha) + (background * (1.0 - alpha))
         return np.clip(preview, 0, 255).astype(np.uint8)
+
+    def _run_ffmpeg_stream(self, cmd, frame_iter, error_prefix):
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            for frame in frame_iter:
+                proc.stdin.write(frame.tobytes())
+            proc.stdin.close()
+            stderr = proc.stderr.read()
+            returncode = proc.wait()
+        except Exception:
+            proc.kill()
+            proc.wait()
+            raise
+        if returncode != 0:
+            raise RuntimeError(f"{error_prefix}\n{stderr.decode('utf-8', 'ignore')}")
 
     def _run_ffmpeg(self, cmd, payload, error_prefix):
         proc = subprocess.run(
@@ -627,14 +701,8 @@ class SaveMatAnyone2Video(SaveMatAnyone2Base):
             filename_prefix, save_path, self.output_dir, image_width, image_height
         )
 
-        rgb = images[..., :3].float().cpu().numpy().clip(0.0, 1.0)
-        rgb_uint8 = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
-        alpha = self._resolve_alpha(images, alpha_mask).numpy().clip(0.0, 1.0)
+        alpha_source = alpha_mask if alpha_mask is not None else None
         background_color = self._get_background_color(background)
-        composite = (rgb_uint8.astype(np.float32) * alpha[..., None]) + (
-            background_color.reshape(1, 1, 1, 3) * (1.0 - alpha[..., None])
-        )
-        composite_uint8 = np.clip(composite, 0, 255).astype(np.uint8)
 
         base_name = f"{filename}_{counter:05}_"
         video_file = f"{base_name}.mp4"
@@ -645,6 +713,9 @@ class SaveMatAnyone2Video(SaveMatAnyone2Base):
         cmd = [
             ffmpeg,
             "-y",
+            "-loglevel",
+            "error",
+            "-nostats",
             "-f",
             "rawvideo",
             "-vcodec",
@@ -669,12 +740,27 @@ class SaveMatAnyone2Video(SaveMatAnyone2Base):
             *audio_output_args,
             video_path,
         ]
-        self._run_ffmpeg(cmd, composite_uint8.tobytes(), "Failed to save MP4 video:")
+        self._run_ffmpeg_stream(
+            cmd,
+            (
+                self._compose_frame(
+                    self._get_frame_rgb_uint8(images, frame_idx),
+                    self._get_frame_alpha_float(images, alpha_source, frame_idx),
+                    background_color,
+                )
+                for frame_idx in range(images.shape[0])
+            ),
+            "Failed to save MP4 video:",
+        )
 
         results = []
         video_previews = ensure_ui_video_preview(video_path, self.output_dir)
         if save_preview_image:
-            preview_rgb = self._compose_preview(rgb_uint8, alpha, background_color)
+            preview_rgb = self._compose_frame(
+                self._get_frame_rgb_uint8(images, 0),
+                self._get_frame_alpha_float(images, alpha_source, 0),
+                background_color,
+            )
             preview_file = write_preview_png(full_output_folder, filename, counter, preview_rgb)
             if external_output:
                 ui_prefix = build_filename_prefix(f"{filename}_preview_cache", "MatAnyone2/previews")
@@ -687,12 +773,14 @@ class SaveMatAnyone2Video(SaveMatAnyone2Base):
                 results.append({"filename": preview_file, "subfolder": subfolder, "type": self.type})
 
         if save_alpha_video:
-            alpha_rgb = np.repeat(np.clip(alpha[..., None] * 255.0, 0, 255).astype(np.uint8), 3, axis=-1)
             alpha_file = f"{base_name}_alpha.mp4"
             alpha_path = os.path.join(full_output_folder, alpha_file)
             alpha_cmd = [
                 ffmpeg,
                 "-y",
+                "-loglevel",
+                "error",
+                "-nostats",
                 "-f",
                 "rawvideo",
                 "-vcodec",
@@ -714,7 +802,20 @@ class SaveMatAnyone2Video(SaveMatAnyone2Base):
                 "-an",
                 alpha_path,
             ]
-            self._run_ffmpeg(alpha_cmd, alpha_rgb.tobytes(), "Failed to save alpha MP4 video:")
+            self._run_ffmpeg_stream(
+                alpha_cmd,
+                (
+                    np.repeat(
+                        (self._get_frame_alpha_float(images, alpha_source, frame_idx)[..., None] * 255.0)
+                        .clip(0, 255)
+                        .astype(np.uint8),
+                        3,
+                        axis=-1,
+                    )
+                    for frame_idx in range(images.shape[0])
+                ),
+                "Failed to save alpha MP4 video:",
+            )
 
         ui = {"gifs": video_previews}
         if results:
@@ -775,10 +876,7 @@ class SaveMatAnyone2TransparentWebM(SaveMatAnyone2Base):
             filename_prefix, save_path, self.output_dir, image_width, image_height
         )
 
-        rgb = images[..., :3].float().cpu().numpy().clip(0.0, 1.0)
-        rgb_uint8 = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
-        alpha = self._resolve_alpha(images, alpha_mask).numpy()[..., None]
-        rgba = np.concatenate([rgb_uint8, np.clip(alpha * 255.0, 0, 255).astype(np.uint8)], axis=-1)
+        alpha_source = alpha_mask if alpha_mask is not None else None
 
         output_file = f"{filename}_{counter:05}_.webm"
         output_path = os.path.join(full_output_folder, output_file)
@@ -788,6 +886,9 @@ class SaveMatAnyone2TransparentWebM(SaveMatAnyone2Base):
         cmd = [
             ffmpeg,
             "-y",
+            "-loglevel",
+            "error",
+            "-nostats",
             "-f",
             "rawvideo",
             "-vcodec",
@@ -814,14 +915,31 @@ class SaveMatAnyone2TransparentWebM(SaveMatAnyone2Base):
             *audio_output_args,
             output_path,
         ]
-        self._run_ffmpeg(cmd, rgba.tobytes(), "Failed to save transparent WebM:")
+        self._run_ffmpeg_stream(
+            cmd,
+            (
+                np.concatenate(
+                    [
+                        self._get_frame_rgb_uint8(images, frame_idx),
+                        (
+                            self._get_frame_alpha_float(images, alpha_source, frame_idx)[..., None] * 255.0
+                        )
+                        .clip(0, 255)
+                        .astype(np.uint8),
+                    ],
+                    axis=-1,
+                )
+                for frame_idx in range(images.shape[0])
+            ),
+            "Failed to save transparent WebM:",
+        )
 
         results = []
         video_previews = ensure_ui_video_preview(output_path, self.output_dir)
         if save_preview_image:
-            preview_rgb = self._compose_preview(
-                rgb_uint8,
-                alpha[..., 0],
+            preview_rgb = self._compose_frame(
+                self._get_frame_rgb_uint8(images, 0),
+                self._get_frame_alpha_float(images, alpha_source, 0),
                 np.array([0.0, 0.0, 0.0], dtype=np.float32),
             )
             preview_file = write_preview_png(full_output_folder, filename, counter, preview_rgb)
@@ -856,6 +974,7 @@ class SaveMatAnyone2TransparentMOV(SaveMatAnyone2Base):
                     "STRING",
                     {"default": "MatAnyone2", "tooltip": "Relative folder in ComfyUI/output, or an absolute directory."},
                 ),
+                "generate_video_preview": ("BOOLEAN", {"default": False}),
                 "save_preview_image": ("BOOLEAN", {"default": True}),
             },
             "optional": {
@@ -875,6 +994,7 @@ class SaveMatAnyone2TransparentMOV(SaveMatAnyone2Base):
         fps,
         filename_prefix,
         save_path,
+        generate_video_preview,
         save_preview_image,
         alpha_mask=None,
         audio_source=None,
@@ -892,10 +1012,7 @@ class SaveMatAnyone2TransparentMOV(SaveMatAnyone2Base):
             filename_prefix, save_path, self.output_dir, image_width, image_height
         )
 
-        rgb = images[..., :3].float().cpu().numpy().clip(0.0, 1.0)
-        rgb_uint8 = np.clip(rgb * 255.0, 0, 255).astype(np.uint8)
-        alpha = self._resolve_alpha(images, alpha_mask).numpy()[..., None]
-        rgba = np.concatenate([rgb_uint8, np.clip(alpha * 255.0, 0, 255).astype(np.uint8)], axis=-1)
+        alpha_source = alpha_mask if alpha_mask is not None else None
 
         output_file = f"{filename}_{counter:05}_.mov"
         output_path = os.path.join(full_output_folder, output_file)
@@ -905,6 +1022,9 @@ class SaveMatAnyone2TransparentMOV(SaveMatAnyone2Base):
         cmd = [
             ffmpeg,
             "-y",
+            "-loglevel",
+            "error",
+            "-nostats",
             "-f",
             "rawvideo",
             "-vcodec",
@@ -931,22 +1051,41 @@ class SaveMatAnyone2TransparentMOV(SaveMatAnyone2Base):
             *audio_output_args,
             output_path,
         ]
-        self._run_ffmpeg(cmd, rgba.tobytes(), "Failed to save transparent MOV:")
+        self._run_ffmpeg_stream(
+            cmd,
+            (
+                np.concatenate(
+                    [
+                        self._get_frame_rgb_uint8(images, frame_idx),
+                        (
+                            self._get_frame_alpha_float(images, alpha_source, frame_idx)[..., None] * 255.0
+                        )
+                        .clip(0, 255)
+                        .astype(np.uint8),
+                    ],
+                    axis=-1,
+                )
+                for frame_idx in range(images.shape[0])
+            ),
+            "Failed to save transparent MOV:",
+        )
 
         results = []
-        preview_proxy_path = write_ui_proxy_preview_video(
-            self.output_dir,
-            f"{filename}_mov_preview",
-            rgb_uint8,
-            alpha[..., 0],
-            fps,
-            audio_source=audio_source,
-        )
-        video_previews = ensure_ui_video_preview(preview_proxy_path, self.output_dir)
+        video_previews = []
+        if generate_video_preview:
+            preview_proxy_path = write_ui_proxy_preview_video(
+                self.output_dir,
+                f"{filename}_mov_preview",
+                images,
+                alpha_source,
+                fps,
+                audio_source=audio_source,
+            )
+            video_previews = ensure_ui_video_preview(preview_proxy_path, self.output_dir)
         if save_preview_image:
-            preview_rgb = self._compose_preview(
-                rgb_uint8,
-                alpha[..., 0],
+            preview_rgb = self._compose_frame(
+                self._get_frame_rgb_uint8(images, 0),
+                self._get_frame_alpha_float(images, alpha_source, 0),
                 np.array([0.0, 0.0, 0.0], dtype=np.float32),
             )
             preview_file = write_preview_png(full_output_folder, filename, counter, preview_rgb)
