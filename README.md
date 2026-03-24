@@ -56,7 +56,7 @@ Manual model download:
 If you download the model manually, place the files here:
 
 ```text
-ComfyUI/models/matanyone2/MatAnyone2
+ComfyUI/models/matanyone2/
 ```
 
 If the package also includes ResNet checkpoint files such as:
